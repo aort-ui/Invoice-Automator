@@ -1,6 +1,8 @@
 import fitz  # PyMuPDF
 import re
 from decimal import Decimal, ROUND_HALF_UP
+import streamlit as st
+import os
 
 def clean_num(text):
     """Strips currency symbols and commas to convert string to float."""
@@ -70,11 +72,9 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
                 
                 old_invoice_total += old_ext
                 
-                # Strict Financial Math Logic: Price / .80 * QTY
                 factor = Decimal('0.80')
                 new_price_raw = old_price / factor
                 
-                # Force round half up to exactly two decimal places
                 new_price = new_price_raw.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 new_ext_raw = new_price * qty
                 new_ext = new_ext_raw.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -134,17 +134,43 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
 
     doc.save(output_pdf_path)
     doc.close()
-    print(f"Flawless generation complete! Saved to {output_pdf_path}")
 
-if __name__ == "__main__":
-    import os
-    import sys
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Invoice Automator", page_icon="📄")
+
+st.title("Invoice Margin Calculator")
+st.write("Upload your invoice PDF to automatically adjust the prices and extensions.")
+
+# 1. Create a drag-and-drop file uploader
+uploaded_file = st.file_uploader("Upload Invoice (PDF)", type=["pdf"])
+
+if uploaded_file is not None:
+    # 2. Get the original name and prepend 'updated_'
+    original_filename = uploaded_file.name
+    output_filename = f"updated_{original_filename}"
     
-    INPUT_FILE = "input.pdf"
-    OUTPUT_FILE = "output.pdf"
-    
-    if not os.path.exists(INPUT_FILE):
-        print(f"Error: {INPUT_FILE} not found. Please upload a file named 'input.pdf'.")
-        sys.exit(1)
+    # 3. Save the uploaded file temporarily so PyMuPDF can read it
+    with open("temp_input.pdf", "wb") as f:
+        f.write(uploaded_file.getbuffer())
         
-    process_flawless_invoice(INPUT_FILE, OUTPUT_FILE)
+    with st.spinner("Processing document..."):
+        try:
+            # 4. Run your exact automator function
+            process_flawless_invoice("temp_input.pdf", "temp_output.pdf")
+            
+            st.success("Done! Your invoice has been updated.")
+            
+            # 5. Provide a download button for the new file
+            with open("temp_output.pdf", "rb") as f:
+                st.download_button(
+                    label="Download Updated Invoice",
+                    data=f,
+                    file_name=output_filename,
+                    mime="application/pdf"
+                )
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+            
+    # 6. Clean up the temporary files from the server
+    if os.path.exists("temp_input.pdf"): os.remove("temp_input.pdf")
+    if os.path.exists("temp_output.pdf"): os.remove("temp_output.pdf")
