@@ -31,17 +31,18 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
                     for span in line.get("spans", []):
                         spans.append(span)
                         
-        c_shipped = c_price = c_ext = None
+        # 1. Map the exact X-coordinate centers for the columns
+        c_price = c_ext = None
         for s in spans:
             text = s['text'].strip()
             x_center = (s['bbox'][0] + s['bbox'][2]) / 2
-            if text == "SHIPPED": c_shipped = x_center
-            elif text == "PRICE": c_price = x_center
+            if text == "PRICE": c_price = x_center
             elif text == "EXTENSION": c_ext = x_center
             
-        if None in (c_shipped, c_price, c_ext):
+        if None in (c_price, c_ext):
             continue  
             
+        # 2. Group spans into rows based on their exact typographic baseline
         rows = {}
         for s in spans:
             y_baseline = round(s['origin'][1])
@@ -53,32 +54,35 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
         old_invoice_total = Decimal('0.00')
         new_invoice_total = Decimal('0.00')
         
+        # 3. Process the table rows
         for y, row_spans in rows.items():
-            qty_s = price_s = ext_s = None
+            price_s = ext_s = None
             
             for s in row_spans:
                 xc = (s['bbox'][0] + s['bbox'][2]) / 2
-                if abs(xc - c_shipped) < 25 and s['text'].strip().isdigit():
-                    qty_s = s
-                elif abs(xc - c_price) < 25 and clean_num(s['text']) is not None:
+                if c_price and abs(xc - c_price) < 25 and clean_num(s['text']) is not None:
                     price_s = s
-                elif abs(xc - c_ext) < 35 and clean_num(s['text']) is not None:
+                elif c_ext and abs(xc - c_ext) < 35 and clean_num(s['text']) is not None:
                     ext_s = s
                     
-            if qty_s and price_s and ext_s:
-                qty = Decimal(qty_s['text'].strip())
+            if price_s and ext_s:
                 old_price = Decimal(str(clean_num(price_s['text'])))
                 old_ext = Decimal(str(clean_num(ext_s['text'])))
                 
+                # Keep track of the old extensions to find the total at the bottom
                 old_invoice_total += old_ext
                 
                 factor = Decimal('0.80')
-                new_price_raw = old_price / factor
                 
+                # Math Logic: Divide PRICE by .80
+                new_price_raw = old_price / factor
                 new_price = new_price_raw.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                new_ext_raw = new_price * qty
+                
+                # Math Logic: Divide EXTENSION by .80
+                new_ext_raw = old_ext / factor
                 new_ext = new_ext_raw.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 
+                # Track the new sum for MERCHANDISE and TOTAL DUE
                 new_invoice_total += new_ext
                 
                 replacements.append({
@@ -90,6 +94,7 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
                     'new_text': f"${new_ext:,.2f}" if '$' in ext_s['text'] else f"{new_ext:,.2f}"
                 })
 
+        # 4. Smart hunt for Summary Totals (MERCHANDISE and TOTAL DUE)
         if old_invoice_total > 0:
             for s in spans:
                 val = clean_num(s['text'])
@@ -108,11 +113,13 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
                         'new_text': new_text_fmt
                     })
                     
+        # 5. Apply TRANSPARENT redactions
         for rep in replacements:
             page.add_redact_annot(rep['span']['bbox'])
             
         page.apply_redactions(images=0, graphics=0)
         
+        # 6. Inject the new text with exact typography matching
         for rep in replacements:
             span = rep['span']
             new_text = rep['new_text']
@@ -139,28 +146,23 @@ def process_flawless_invoice(input_pdf_path, output_pdf_path):
 st.set_page_config(page_title="Invoice Automator", page_icon="📄")
 
 st.title("Invoice Margin Calculator")
-st.write("Upload your invoice PDF to automatically adjust the prices and extensions.")
+st.write("Upload your invoice PDF to automatically adjust the prices and extensions by dividing by 0.80.")
 
-# 1. Create a drag-and-drop file uploader
 uploaded_file = st.file_uploader("Upload Invoice (PDF)", type=["pdf"])
 
 if uploaded_file is not None:
-    # 2. Get the original name and prepend 'updated_'
     original_filename = uploaded_file.name
     output_filename = f"updated_{original_filename}"
     
-    # 3. Save the uploaded file temporarily so PyMuPDF can read it
     with open("temp_input.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
         
     with st.spinner("Processing document..."):
         try:
-            # 4. Run your exact automator function
             process_flawless_invoice("temp_input.pdf", "temp_output.pdf")
             
             st.success("Done! Your invoice has been updated.")
             
-            # 5. Provide a download button for the new file
             with open("temp_output.pdf", "rb") as f:
                 st.download_button(
                     label="Download Updated Invoice",
@@ -171,6 +173,5 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"An error occurred: {e}")
             
-    # 6. Clean up the temporary files from the server
     if os.path.exists("temp_input.pdf"): os.remove("temp_input.pdf")
     if os.path.exists("temp_output.pdf"): os.remove("temp_output.pdf")
